@@ -118,6 +118,10 @@ install-envtest: update-vendor
 integration-test: install-envtest
 	hack/integration-test.sh
 
+.PHONY: prepare-integration-test-envs
+prepare-integration-test-envs: install-envtest
+	hack/prepare-integration-test-envs.sh
+
 .PHONY: verify
 verify: update-vendor
 	hack/verify-gofmt.sh

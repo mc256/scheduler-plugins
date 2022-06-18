@@ -21,3 +21,5 @@ hack/tools/bin/*
 *.sublime-project
 *.sublime-workspace
 *~
+
+.localtest_env

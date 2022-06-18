@@ -39,7 +39,9 @@ func TestMain(m *testing.M) {
 	apiServerArgs.Append("runtime-config", "api/all=true")
 
 	// start envtest cluster
+	log.Println(testEnv)
 	cfg, err := testEnv.Start()
+	log.Println(cfg)
 	defer testEnv.Stop()
 	if err != nil {
 		log.Fatal(err)
