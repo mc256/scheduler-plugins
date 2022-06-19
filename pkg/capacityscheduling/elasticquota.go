@@ -39,7 +39,8 @@ func (e ElasticQuotaInfos) clone() ElasticQuotaInfos {
 	return elasticQuotas
 }
 
-// aggregatedUsedOverMinWith return true if used is more than minimal (for preemption)
+// aggregatedUsedOverMinWith return true if used is more than the SUM of all sibling minimum (for preemption)
+//
 func (e ElasticQuotaInfos) aggregatedUsedOverMinWith(podRequest framework.Resource) bool {
 	used := framework.NewResource(nil)
 	min := framework.NewResource(nil)

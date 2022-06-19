@@ -252,18 +252,15 @@ func (c *CapacityScheduling) PreFilter(ctx context.Context, state *framework.Cyc
 			info := c.elasticQuotaInfos[ns]
 			if info != nil {
 				pResourceRequest := util.ResourceList(computePodResourceRequest(p.Pod))
-				// If they are subject to the same quota(namespace) and p is more important than pod,
-				// p will be added to the nominatedResource and totalNominatedResource.
-				// If they aren't subject to the same quota(namespace) and the usage of quota(p's namespace) does not exceed min,
-				// p will be added to the totalNominatedResource.
+
 				if ns == pod.Namespace && corev1helpers.PodPriority(p.Pod) >= corev1helpers.PodPriority(pod) {
-					// under the same namespace and the other pod is more important than the requested pod
+					// under the same namespace and the other pod has higher priority than the requested pod
 					// add to InEQ and NoEQ
 					nominatedPodsReqInEQWithPodReq.Add(pResourceRequest)
 					nominatedPodsReqWithPodReq.Add(pResourceRequest)
 				} else if ns != pod.Namespace && !info.usedOverMin() {
 					// not under the same namespace
-					// and the other pod is not using more than its namespace minimum quota
+					// and the other pod is not using more than its namespace(parent) minimum quota
 					// that means the other pod is okay.
 					//
 					// add to NoEQ
@@ -287,7 +284,10 @@ func (c *CapacityScheduling) PreFilter(ctx context.Context, state *framework.Cyc
 		return framework.NewStatus(framework.Unschedulable, fmt.Sprintf("Pod %v/%v is rejected in PreFilter because ElasticQuota %v is more than Max", pod.Namespace, pod.Name, eq.Namespace))
 	}
 
-	//  2. Check if the sum(eq's usage) > sum(eq's min).
+	//  2. Check if the sum(eq's usage) > sum(TOTAL's min).
+	//  if it is greater than ROOT's min then return error
+	//
+	//  less than the sum of sibling's min
 	if elasticQuotaInfos.aggregatedUsedOverMinWith(*nominatedPodsReqWithPodReq) {
 		return framework.NewStatus(framework.Unschedulable, fmt.Sprintf("Pod %v/%v is rejected in PreFilter because total ElasticQuota used is more than min", pod.Namespace, pod.Name))
 	}
@@ -338,6 +338,9 @@ func (c *CapacityScheduling) RemovePod(ctx context.Context, cycleState *framewor
 	return framework.NewStatus(framework.Success, "")
 }
 
+// PostFilter preempt other pods if necessary to guarantee the current pod is scheduled
+// We consider: 1) the total resource 2) pod's priority
+// Check preemptor.PodEligibleToPreemptOthers() method
 func (c *CapacityScheduling) PostFilter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, m framework.NodeToStatusMap) (*framework.PostFilterResult, *framework.Status) {
 	defer func() {
 		metrics.PreemptionAttempts.Inc()
@@ -386,6 +389,10 @@ func (c *CapacityScheduling) Unreserve(ctx context.Context, state *framework.Cyc
 	}
 }
 
+// ----------------------------------------------------------------------------------------------------------------
+// Preemptor
+// ----------------------------------------------------------------------------------------------------------------
+
 type preemptor struct {
 	fh    framework.Handle
 	state *framework.CycleState
@@ -409,19 +416,23 @@ func (p *preemptor) CandidatesToVictimsMap(candidates []preemption.Candidate) ma
 // considered for preemption.
 // We look at the node that is nominated for this pod and as long as there are
 // terminating pods on the node, we don't consider this for preempting more pods.
+// true if eligible , false ineligible
 // TODO: add Tree structure
 func (p *preemptor) PodEligibleToPreemptOthers(pod *v1.Pod, nominatedNodeStatus *framework.Status) bool {
+	// Check preemption policy
 	if pod.Spec.PreemptionPolicy != nil && *pod.Spec.PreemptionPolicy == v1.PreemptNever {
 		klog.V(5).InfoS("Pod is not eligible for preemption because of its preemptionPolicy", "pod", klog.KObj(pod), "preemptionPolicy", v1.PreemptNever)
 		return false
 	}
 
+	// Check PreFilterState
 	preFilterState, err := getPreFilterState(p.state)
 	if err != nil {
 		klog.ErrorS(err, "Failed to read preFilterState from cycleState", "preFilterStateKey", preFilterStateKey)
 		return false
 	}
 
+	// Get Nominated Node's Information
 	nomNodeName := pod.Status.NominatedNodeName
 	nodeLister := p.fh.SnapshotSharedLister().NodeInfos()
 	if len(nomNodeName) > 0 {
@@ -431,6 +442,7 @@ func (p *preemptor) PodEligibleToPreemptOthers(pod *v1.Pod, nominatedNodeStatus 
 			return true
 		}
 
+		// Get a snapshot of the quota state
 		elasticQuotaSnapshotState, err := getElasticQuotaSnapshotState(p.state)
 		if err != nil {
 			klog.ErrorS(err, "Failed to read elasticQuotaSnapshot from cycleState", "elasticQuotaSnapshotKey", ElasticQuotaSnapshotKey)
@@ -445,6 +457,20 @@ func (p *preemptor) PodEligibleToPreemptOthers(pod *v1.Pod, nominatedNodeStatus 
 		podPriority := corev1helpers.PodPriority(pod)
 		preemptorEQInfo, preemptorWithEQ := elasticQuotaSnapshotState.elasticQuotaInfos[pod.Namespace]
 		if preemptorWithEQ {
+			// the pod is in EQ's control
+
+			// If there exists a pod that is
+			// Current namespace have taken actions to release low priority pods
+			// - terminating
+			// - in the same Namespace
+			// - has a lower priority
+			// OR
+			// Other namespaces have taken sufficient actions to release low priority pods
+			// - terminating
+			// - NOT in the same Namespace
+			// - the weight of "new" pod with higher priority pods in the same namespace less than the min
+			//		(therefore they have higher priority and needs to be allocated)
+			// - the other namespace has used more than its minimum
 			moreThanMinWithPreemptor := preemptorEQInfo.usedOverMinWith(&preFilterState.nominatedPodsReqInEQWithPodReq)
 			for _, p := range nodeInfo.Pods {
 				if p.Pod.DeletionTimestamp != nil {
@@ -469,6 +495,9 @@ func (p *preemptor) PodEligibleToPreemptOthers(pod *v1.Pod, nominatedNodeStatus 
 				}
 			}
 		} else {
+			// the pod is NOT in EQ's control
+
+			// If there exists a pod that is going to be deleted and has a lower priority then do not consider this pod
 			for _, p := range nodeInfo.Pods {
 				_, withEQ := elasticQuotaSnapshotState.elasticQuotaInfos[p.Pod.Namespace]
 				if withEQ {
@@ -484,13 +513,15 @@ func (p *preemptor) PodEligibleToPreemptOthers(pod *v1.Pod, nominatedNodeStatus 
 	return true
 }
 
-// TODO: add Tree Structure here! Important!
+// SelectVictimsOnNode selects pods to be preempted
 func (p *preemptor) SelectVictimsOnNode(
 	ctx context.Context,
 	state *framework.CycleState,
 	pod *v1.Pod,
 	nodeInfo *framework.NodeInfo,
 	pdbs []*policy.PodDisruptionBudget) ([]*v1.Pod, int, *framework.Status) {
+
+	// Get EQ State
 	elasticQuotaSnapshotState, err := getElasticQuotaSnapshotState(state)
 	if err != nil {
 		msg := "Failed to read elasticQuotaSnapshot from cycleState"
@@ -505,10 +536,12 @@ func (p *preemptor) SelectVictimsOnNode(
 		return nil, 0, framework.NewStatus(framework.Unschedulable, msg)
 	}
 
+	// Get Resources
 	var nominatedPodsReqInEQWithPodReq framework.Resource
 	var nominatedPodsReqWithPodReq framework.Resource
 	podReq := preFilterState.podReq
 
+	// Helper method
 	removePod := func(rpi *framework.PodInfo) error {
 		if err := nodeInfo.RemovePod(rpi.Pod); err != nil {
 			return err
@@ -528,10 +561,12 @@ func (p *preemptor) SelectVictimsOnNode(
 		return nil
 	}
 
+	// current pod's related information
 	elasticQuotaInfos := elasticQuotaSnapshotState.elasticQuotaInfos
 	podPriority := corev1helpers.PodPriority(pod)
 	preemptorElasticQuotaInfo, preemptorWithElasticQuota := elasticQuotaInfos[pod.Namespace]
 
+	// Other pods in the node
 	// sort the pods in node by the priority class
 	sort.Slice(nodeInfo.Pods, func(i, j int) bool { return !schedutil.MoreImportantPod(nodeInfo.Pods[i].Pod, nodeInfo.Pods[j].Pod) })
 
@@ -543,6 +578,7 @@ func (p *preemptor) SelectVictimsOnNode(
 		for _, p := range nodeInfo.Pods {
 			eqInfo, withEQ := elasticQuotaInfos[p.Pod.Namespace]
 			if !withEQ {
+				// ignore pods that are not ruled by us
 				continue
 			}
 
@@ -550,7 +586,7 @@ func (p *preemptor) SelectVictimsOnNode(
 				// If Preemptor.Request + Quota.Used > Quota.Min:
 				// It means that its guaranteed isn't borrowed by other
 				// quotas. So that we will select the pods which subject to the
-				// same quota(namespace) with the lower priority than the
+				// same quota(namespace) with the LOWER priority than the
 				// preemptor's priority as potential victims in a node.
 				if p.Pod.Namespace == pod.Namespace && corev1helpers.PodPriority(p.Pod) < podPriority {
 					potentialVictims = append(potentialVictims, p)
@@ -575,6 +611,8 @@ func (p *preemptor) SelectVictimsOnNode(
 			}
 		}
 	} else {
+		// not with EQ:
+		// not controlled by us, just standard procedure to preempt lower priority nodes that are not in EQ
 		for _, p := range nodeInfo.Pods {
 			_, withEQ := elasticQuotaInfos[p.Pod.Namespace]
 			if withEQ {
@@ -601,6 +639,8 @@ func (p *preemptor) SelectVictimsOnNode(
 	// inter-pod affinity to one or more victims, but we have decided not to
 	// support this case for performance reasons. Having affinity to lower
 	// priority pods is not a recommended configuration anyway.
+	//
+	// not ruled by EQ, standard practice
 	if s := p.fh.RunFilterPluginsWithNominatedPods(ctx, state, pod, nodeInfo); !s.IsSuccess() {
 		return nil, 0, s
 	}
@@ -608,6 +648,8 @@ func (p *preemptor) SelectVictimsOnNode(
 	// If the quota.used + pod.request > quota.max or sum(quotas.used) + pod.request > sum(quotas.min)
 	// after removing all the lower priority pods,
 	// we are almost done and this node is not suitable for preemption.
+	//
+	// ruled by EQ
 	if preemptorWithElasticQuota {
 		if preemptorElasticQuotaInfo.usedOverMaxWith(&podReq) ||
 			elasticQuotaInfos.aggregatedUsedOverMinWith(podReq) {
@@ -615,12 +657,14 @@ func (p *preemptor) SelectVictimsOnNode(
 		}
 	}
 
+	// Sort victim pods
 	var victims []*v1.Pod
 	numViolatingVictim := 0
 	sort.Slice(potentialVictims, func(i, j int) bool {
 		return schedutil.MoreImportantPod(potentialVictims[i].Pod, potentialVictims[j].Pod)
 	})
-	// Try to reprieve as many pods as possible. We first try to reprieve the PDB
+
+	// Try to reprieve as many pods as possible. We first try to reprieve the PDB (PodDisruptionBudget)
 	// violating victims and then other non-violating ones. In both cases, we start
 	// from the highest priority victims.
 	violatingVictims, nonViolatingVictims := filterPodsWithPDBViolation(potentialVictims, pdbs)
