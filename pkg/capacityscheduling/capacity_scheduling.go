@@ -50,6 +50,13 @@ import (
 	"sigs.k8s.io/scheduler-plugins/pkg/util"
 )
 
+/*
+Three steps:
+1. PreFilter
+2. PostFilter
+3. Reserve
+*/
+
 // CapacityScheduling is a plugin that implements the mechanism of capacity scheduling.
 type CapacityScheduling struct {
 	sync.RWMutex
@@ -61,6 +68,7 @@ type CapacityScheduling struct {
 }
 
 // PreFilterState computed at PreFilter and used at PostFilter or Reserve.
+// This is state for Step 1
 type PreFilterState struct {
 	podReq framework.Resource
 
@@ -95,7 +103,8 @@ func (s *ElasticQuotaSnapshotState) Clone() framework.StateData {
 var _ framework.PreFilterPlugin = &CapacityScheduling{}
 var _ framework.PostFilterPlugin = &CapacityScheduling{}
 var _ framework.ReservePlugin = &CapacityScheduling{}
-var _ framework.EnqueueExtensions = &CapacityScheduling{}
+
+var _ framework.EnqueueExtensions = &CapacityScheduling{} // for job queue
 var _ preemption.Interface = &preemptor{}
 
 const (
@@ -209,6 +218,7 @@ func (c *CapacityScheduling) PreFilter(ctx context.Context, state *framework.Cyc
 	elasticQuotaInfos := snapshotElasticQuota.elasticQuotaInfos
 	eq := snapshotElasticQuota.elasticQuotaInfos[pod.Namespace]
 	if eq == nil {
+		// if the namespace is not specified in EQ CRDs, just let it go
 		preFilterState := &PreFilterState{
 			podReq: *podReq,
 		}
@@ -225,11 +235,13 @@ func (c *CapacityScheduling) PreFilter(ctx context.Context, state *framework.Cyc
 	// 2. the pods subject to the different quota(namespace) and the usage of quota(namespace) does not exceed min.
 	nominatedPodsReqWithPodReq := &framework.Resource{}
 
+	// Obtain resources of the nodes
 	nodeList, err := c.fh.SnapshotSharedLister().NodeInfos().List()
 	if err != nil {
 		return framework.NewStatus(framework.Error, fmt.Sprintf("Error getting the nodelist: %v", err))
 	}
 
+	// TODO: add Tree feature in this block. We need to check
 	for _, node := range nodeList {
 		nominatedPods := c.fh.NominatedPodsForNode(node.Node().Name)
 		for _, p := range nominatedPods {
@@ -245,9 +257,16 @@ func (c *CapacityScheduling) PreFilter(ctx context.Context, state *framework.Cyc
 				// If they aren't subject to the same quota(namespace) and the usage of quota(p's namespace) does not exceed min,
 				// p will be added to the totalNominatedResource.
 				if ns == pod.Namespace && corev1helpers.PodPriority(p.Pod) >= corev1helpers.PodPriority(pod) {
+					// under the same namespace and the other pod is more important than the requested pod
+					// add to InEQ and NoEQ
 					nominatedPodsReqInEQWithPodReq.Add(pResourceRequest)
 					nominatedPodsReqWithPodReq.Add(pResourceRequest)
 				} else if ns != pod.Namespace && !info.usedOverMin() {
+					// not under the same namespace
+					// and the other pod is not using more than its namespace minimum quota
+					// that means the other pod is okay.
+					//
+					// add to NoEQ
 					nominatedPodsReqWithPodReq.Add(pResourceRequest)
 				}
 			}
@@ -263,10 +282,12 @@ func (c *CapacityScheduling) PreFilter(ctx context.Context, state *framework.Cyc
 	}
 	state.Write(preFilterStateKey, preFilterState)
 
+	// 1. Check if the (pod.request + eq.allocated) is less than eq.max.
 	if eq.usedOverMaxWith(nominatedPodsReqInEQWithPodReq) {
 		return framework.NewStatus(framework.Unschedulable, fmt.Sprintf("Pod %v/%v is rejected in PreFilter because ElasticQuota %v is more than Max", pod.Namespace, pod.Name, eq.Namespace))
 	}
 
+	//  2. Check if the sum(eq's usage) > sum(eq's min).
 	if elasticQuotaInfos.aggregatedUsedOverMinWith(*nominatedPodsReqWithPodReq) {
 		return framework.NewStatus(framework.Unschedulable, fmt.Sprintf("Pod %v/%v is rejected in PreFilter because total ElasticQuota used is more than min", pod.Namespace, pod.Name))
 	}
@@ -388,6 +409,7 @@ func (p *preemptor) CandidatesToVictimsMap(candidates []preemption.Candidate) ma
 // considered for preemption.
 // We look at the node that is nominated for this pod and as long as there are
 // terminating pods on the node, we don't consider this for preempting more pods.
+// TODO: add Tree structure
 func (p *preemptor) PodEligibleToPreemptOthers(pod *v1.Pod, nominatedNodeStatus *framework.Status) bool {
 	if pod.Spec.PreemptionPolicy != nil && *pod.Spec.PreemptionPolicy == v1.PreemptNever {
 		klog.V(5).InfoS("Pod is not eligible for preemption because of its preemptionPolicy", "pod", klog.KObj(pod), "preemptionPolicy", v1.PreemptNever)
@@ -462,6 +484,7 @@ func (p *preemptor) PodEligibleToPreemptOthers(pod *v1.Pod, nominatedNodeStatus 
 	return true
 }
 
+// TODO: add Tree Structure here! Important!
 func (p *preemptor) SelectVictimsOnNode(
 	ctx context.Context,
 	state *framework.CycleState,
@@ -643,6 +666,10 @@ func (p *preemptor) SelectVictimsOnNode(
 	return victims, numViolatingVictim, framework.NewStatus(framework.Success)
 }
 
+// ----------------------------------------------------------------------------------------------------------------
+// Quota from API types
+// ----------------------------------------------------------------------------------------------------------------
+
 func (c *CapacityScheduling) addElasticQuota(obj interface{}) {
 	eq := obj.(*v1alpha1.ElasticQuota)
 	oldElasticQuotaInfo := c.elasticQuotaInfos[eq.Namespace]
@@ -679,6 +706,10 @@ func (c *CapacityScheduling) deleteElasticQuota(obj interface{}) {
 	defer c.Unlock()
 	delete(c.elasticQuotaInfos, elasticQuota.Namespace)
 }
+
+// ----------------------------------------------------------------------------------------------------------------
+// Pod
+// ----------------------------------------------------------------------------------------------------------------
 
 func (c *CapacityScheduling) addPod(obj interface{}) {
 	pod := obj.(*v1.Pod)
@@ -750,7 +781,11 @@ func (c *CapacityScheduling) deletePod(obj interface{}) {
 	}
 }
 
-// getElasticQuotasSnapshot will return the snapshot of elasticQuotas.
+// ----------------------------------------------------------------------------------------------------------------
+// Quota State
+// ----------------------------------------------------------------------------------------------------------------
+
+// snapshotElasticQuota will return the snapshot of elasticQuotas.
 func (c *CapacityScheduling) snapshotElasticQuota() *ElasticQuotaSnapshotState {
 	c.RLock()
 	defer c.RUnlock()
@@ -775,6 +810,8 @@ func getPreFilterState(cycleState *framework.CycleState) (*PreFilterState, error
 	return s, nil
 }
 
+// getElasticQuotaSnapshotState obtains ElasticQuotaSnapshotState from storage. The state consists of
+// pairs of "namespace" and "quota"
 func getElasticQuotaSnapshotState(cycleState *framework.CycleState) (*ElasticQuotaSnapshotState, error) {
 	c, err := cycleState.Read(ElasticQuotaSnapshotKey)
 	if err != nil {

@@ -122,6 +122,10 @@ integration-test: install-envtest
 prepare-integration-test-envs: install-envtest
 	hack/prepare-integration-test-envs.sh
 
+.PHONY: update-codegen
+update-codegen:
+	hack/update-codegen.sh
+
 .PHONY: verify
 verify: update-vendor
 	hack/verify-gofmt.sh

@@ -23,7 +23,7 @@ import (
 )
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:shortName={eq,eqs}
+// +kubebuilder:resource:shortName={teq,teqs}
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ElasticQuota sets elastic quota restrictions per namespace
@@ -53,6 +53,10 @@ type ElasticQuotaSpec struct {
 	// successfully scheduled pods.
 	// +optional
 	Max v1.ResourceList `json:"max,omitempty" protobuf:"bytes,2,rep,name=max, casttype=ResourceList,castkey=ResourceName"`
+
+	// Children is a list of child namespaces that can use up to the limit of this namespace
+	// +optional
+	Children ElasticQuotaList `json:"children,omitempty" protobuf:"bytes,3,opt,name=children"`
 }
 
 // ElasticQuotaStatus defines the observed use.

@@ -23,6 +23,8 @@ import (
 	"sigs.k8s.io/scheduler-plugins/pkg/util"
 )
 
+// ElasticQuotaInfos maps namespaces (in strings) to ElasticQuotaInfo
+// One namespace has a unique ElasticQuotaInfo
 type ElasticQuotaInfos map[string]*ElasticQuotaInfo
 
 func NewElasticQuotaInfos() ElasticQuotaInfos {
@@ -37,6 +39,7 @@ func (e ElasticQuotaInfos) clone() ElasticQuotaInfos {
 	return elasticQuotas
 }
 
+// aggregatedUsedOverMinWith return true if used is more than minimal (for preemption)
 func (e ElasticQuotaInfos) aggregatedUsedOverMinWith(podRequest framework.Resource) bool {
 	used := framework.NewResource(nil)
 	min := framework.NewResource(nil)
@@ -51,7 +54,7 @@ func (e ElasticQuotaInfos) aggregatedUsedOverMinWith(podRequest framework.Resour
 }
 
 // ElasticQuotaInfo is a wrapper to a ElasticQuota with information.
-// Each namespace can only have one ElasticQuota.
+// Each namespace can only have one ElasticQuota. It contains a set of pods
 type ElasticQuotaInfo struct {
 	Namespace string
 	pods      sets.String
@@ -87,14 +90,17 @@ func (e *ElasticQuotaInfo) unreserveResource(request framework.Resource) {
 	}
 }
 
+// usedOverMinWith returns true if "used" + "requested" > "min"  (for preemption)
 func (e *ElasticQuotaInfo) usedOverMinWith(podRequest *framework.Resource) bool {
 	return cmp2(podRequest, e.Used, e.Min)
 }
 
+// usedOverMaxWith returns true if "used" + "requested" > "max" (not possible, should not happen)
 func (e *ElasticQuotaInfo) usedOverMaxWith(podRequest *framework.Resource) bool {
 	return cmp2(podRequest, e.Used, e.Max)
 }
 
+// usedOverMaxWith returns true if "used" > "max" (for preemption)
 func (e *ElasticQuotaInfo) usedOverMin() bool {
 	return cmp(e.Used, e.Min)
 }
@@ -124,6 +130,7 @@ func (e *ElasticQuotaInfo) clone() *ElasticQuotaInfo {
 	return newEQInfo
 }
 
+// addPodIfNotPresent adds pod and updates quota
 func (e *ElasticQuotaInfo) addPodIfNotPresent(pod *v1.Pod) error {
 	key, err := framework.GetPodKey(pod)
 	if err != nil {
@@ -141,6 +148,7 @@ func (e *ElasticQuotaInfo) addPodIfNotPresent(pod *v1.Pod) error {
 	return nil
 }
 
+// deletePodIfPresent removes pod and updates quota
 func (e *ElasticQuotaInfo) deletePodIfPresent(pod *v1.Pod) error {
 	key, err := framework.GetPodKey(pod)
 	if err != nil {
@@ -158,10 +166,12 @@ func (e *ElasticQuotaInfo) deletePodIfPresent(pod *v1.Pod) error {
 	return nil
 }
 
+// cmp returns true if x > y
 func cmp(x, y *framework.Resource) bool {
 	return cmp2(x, &framework.Resource{}, y)
 }
 
+// cmp2 returns true if x1 + x2 > y
 func cmp2(x1, x2, y *framework.Resource) bool {
 	if x1.MilliCPU+x2.MilliCPU > y.MilliCPU {
 		return true
