@@ -21,4 +21,12 @@ resources:
   kind: ElasticQuota
   path: sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: scheduling.sigs.k8s.io
+  group: scheduling
+  kind: ElasticQuotaTree
+  path: sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1
+  version: v1alpha1
 version: "3"

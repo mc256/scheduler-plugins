@@ -19,17 +19,17 @@ controller:
 # as they need extra RBAC privileges on metrics.k8s.io.
 
 plugins:
-  enabled: ["Coscheduling","CapacityScheduling","NodeResourceTopologyMatch", "NodeResourcesAllocatable"]
+  enabled: ["Coscheduling","CapacityScheduling","CapacitySchedulingTree","NodeResourceTopologyMatch", "NodeResourcesAllocatable"]
 
 global:  
    # queueSort is not indented under extensions 
    # as it needs to be globally enabled once. 
   queueSort: ["Coscheduling"]
   extensions: 
-    preFilter: ["Coscheduling", "CapacityScheduling"] 
+    preFilter: ["Coscheduling", "CapacityScheduling","CapacitySchedulingTree"]
     filter: ["NodeResourceTopologyMatch"] 
-    postFilter: ["Coscheduling", "CapacityScheduling"] 
+    postFilter: ["Coscheduling", "CapacityScheduling","CapacitySchedulingTree"]
     score: ["NodeResourceTopologyMatch", "NodeResourcesAllocatable"] 
     permit: ["Coscheduling"] 
-    reserve: ["Coscheduling", "CapacityScheduling"] 
+    reserve: ["Coscheduling", "CapacityScheduling","CapacitySchedulingTree"]
     postBind: ["Coscheduling"]
