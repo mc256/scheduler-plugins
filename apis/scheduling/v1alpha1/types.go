@@ -22,8 +22,9 @@ import (
 	"sigs.k8s.io/scheduler-plugins/apis/scheduling"
 )
 
+// ------------------------------------------------------------------------------------
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:shortName={teq,teqs}
+// +kubebuilder:resource:shortName={eq,eqs}
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ElasticQuota sets elastic quota restrictions per namespace
@@ -53,10 +54,6 @@ type ElasticQuotaSpec struct {
 	// successfully scheduled pods.
 	// +optional
 	Max v1.ResourceList `json:"max,omitempty" protobuf:"bytes,2,rep,name=max, casttype=ResourceList,castkey=ResourceName"`
-
-	// Children is a list of child namespaces that can use up to the limit of this namespace
-	// +optional
-	Children ElasticQuotaList `json:"children,omitempty" protobuf:"bytes,3,opt,name=children"`
 }
 
 // ElasticQuotaStatus defines the observed use.
@@ -80,6 +77,65 @@ type ElasticQuotaList struct {
 	// Items is a list of ElasticQuota objects.
 	Items []ElasticQuota `json:"items" protobuf:"bytes,2,rep,name=items"`
 }
+
+// ------------------------------------------------------------------------------------
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:shortName={eqt,eqts}
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+// ElasticQuotaTree sets elastic quota restrictions per namespace
+type ElasticQuotaTree struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// Standard object's metadata.
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
+
+	// ElasticQuotaSpec defines the Min and Max for Quota.
+	// +optional
+	Spec ElasticQuotaTreeRoot `json:"spec,omitempty" protobuf:"bytes,2,opt,name=spec"`
+
+	// ElasticQuotaStatus defines the observed use.
+	// +optional
+	Status ElasticQuotaTreeStatus `json:"status,omitempty" protobuf:"bytes,3,opt,name=status"`
+}
+
+type ElasticQuotaTreeRoot struct {
+	// HardLimit is the set of hard limits for the entire Elastic Quota Tree.
+	// +optional
+	HardLimit v1.ResourceList `json:"hardLimit,omitempty" protobuf:"bytes,1,rep,name=hardLimit, casttype=ResourceList,castkey=ResourceName"`
+
+	// Children is a list of ElasticQuotaTreeNode objects.
+	// +optional
+	Children []ElasticQuotaTreeNode `json:"children" protobuf:"bytes,2,rep,name=children"`
+}
+
+type ElasticQuotaTreeNode struct {
+	// Namespace obeys the corresponding quota
+	Namespace string `json:"namespace" protobuf:"byte,1,name=namespace"`
+
+	// Min is the set of desired guaranteed limits for each named resource.
+	// +optional
+	Min v1.ResourceList `json:"min,omitempty" protobuf:"bytes,1,rep,name=min, casttype=ResourceList,castkey=ResourceName"`
+
+	// Max is the set of desired max limits for each named resource. The usage of max is based on the resource configurations of
+	// successfully scheduled pods.
+	// +optional
+	Max v1.ResourceList `json:"max,omitempty" protobuf:"bytes,2,rep,name=max, casttype=ResourceList,castkey=ResourceName"`
+
+	// Children is a list of ElasticQuotaTreeNode objects.
+	// +optional
+	Children []ElasticQuotaTreeNode `json:"children" protobuf:"bytes,3,rep,name=children"`
+}
+
+// ElasticQuotaTreeStatus defines the observed use.
+type ElasticQuotaTreeStatus struct {
+	// Used is the current observed total usage of the resource in the namespace.
+	// +optional
+	Used v1.ResourceList `json:"used,omitempty" protobuf:"bytes,1,rep,name=used,casttype=ResourceList,castkey=ResourceName"`
+}
+
+// ------------------------------------------------------------------------------------
 
 // PodGroupPhase is the phase of a pod group at the current time.
 type PodGroupPhase string

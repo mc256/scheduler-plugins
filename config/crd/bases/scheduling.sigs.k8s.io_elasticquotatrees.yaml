@@ -5,7 +5,6 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.6.2
-    api-approved.kubernetes.io: https://github.com/mc256/scheduler-plugins/pull/1 # edited manually
   creationTimestamp: null
   name: elasticquotatrees.scheduling.sigs.k8s.io
 spec:
@@ -43,7 +42,37 @@ spec:
               children:
                 description: Children is a list of ElasticQuotaTreeNode objects.
                 items:
-                  x-kubernetes-preserve-unknown-fields: true
+                  properties:
+                    children:
+                      description: Children is a list of ElasticQuotaTreeNode objects.
+                      items: {}
+                      type: array
+                    max:
+                      additionalProperties:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      description: Max is the set of desired max limits for each named
+                        resource. The usage of max is based on the resource configurations
+                        of successfully scheduled pods.
+                      type: object
+                    min:
+                      additionalProperties:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      description: Min is the set of desired guaranteed limits for
+                        each named resource.
+                      type: object
+                    namespace:
+                      description: Namespace obeys the corresponding quota
+                      type: string
+                  required:
+                  - namespace
                   type: object
                 type: array
               hardLimit:

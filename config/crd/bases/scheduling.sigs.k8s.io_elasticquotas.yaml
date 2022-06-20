@@ -5,7 +5,6 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.6.2
-    api-approved.kubernetes.io: https://github.com/kubernetes-sigs/scheduler-plugins/pull/52 # edited manually
   creationTimestamp: null
   name: elasticquotas.scheduling.sigs.k8s.io
 spec:
